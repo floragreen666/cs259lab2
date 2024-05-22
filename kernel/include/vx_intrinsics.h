@@ -233,6 +233,11 @@ inline void vx_fence() {
     asm volatile ("fence iorw, iorw");
 }
 
+// DOT8
+inline int vx_dot8(int a, int b) {
+    // TODO:
+}
+
 #ifdef __cplusplus
 }
 #endif

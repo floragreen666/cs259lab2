@@ -198,7 +198,7 @@ index 13a34f4d..aff72592 100644
  
          `RESET_RELAY (mdv_reset, block_reset);
 -
-+        
++
          VX_alu_muldiv #(
              .CORE_ID   (CORE_ID),
              .NUM_LANES (NUM_LANES)
