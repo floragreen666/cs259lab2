@@ -1,0 +1,912 @@
+diff --git a/hw/rtl/VX_define.vh b/hw/rtl/VX_define.vh
+index 477129a4..082aacbd 100644
+--- a/hw/rtl/VX_define.vh
++++ b/hw/rtl/VX_define.vh
+@@ -135,7 +135,7 @@
+ `define INST_ALU_OR          4'b1101
+ `define INST_ALU_XOR         4'b1110
+ `define INST_ALU_SLL         4'b1111
+-`define INST_ALU_OTHER       4'b0111
++`define INST_ALU_DOT8        4'b0001
+ `define INST_ALU_BITS        4
+ `define INST_ALU_CLASS(op)   op[3:2]
+ `define INST_ALU_SIGNED(op)  op[0]
+diff --git a/hw/rtl/core/VX_alu_dot8.sv b/hw/rtl/core/VX_alu_dot8.sv
+new file mode 100644
+index 00000000..c5ebeb35
+--- /dev/null
++++ b/hw/rtl/core/VX_alu_dot8.sv
+@@ -0,0 +1,115 @@
++// Copyright © 2019-2023
++//
++// Licensed under the Apache License, Version 2.0 (the "License");
++// you may not use this file except in compliance with the License.
++// You may obtain a copy of the License at
++// http://www.apache.org/licenses/LICENSE-2.0
++//
++// Unless required by applicable law or agreed to in writing, software
++// distributed under the License is distributed on an "AS IS" BASIS,
++// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++// See the License for the specific language governing permissions and
++// limitations under the License.
++
++`include "VX_define.vh"
++
++module VX_alu_dot8 #(
++    parameter CORE_ID   = 0,
++    parameter NUM_LANES = 1
++) (
++    input wire          clk,
++    input wire          reset,
++
++    // Inputs
++    VX_execute_if.slave execute_if,
++
++    // Outputs
++    VX_commit_if.master commit_if
++);
++    `UNUSED_PARAM (CORE_ID)
++    localparam PID_BITS = `CLOG2(`NUM_THREADS / NUM_LANES);
++    localparam PID_WIDTH = `UP(PID_BITS);
++    //                     uuid,         wid,        tmask,      PC,     rd,        wb, pid,       sop, eop
++    localparam TAG_WIDTH = `UUID_WIDTH + `NW_WIDTH + NUM_LANES + `XLEN + `NR_BITS + 1 + PID_WIDTH + 1 + 1;
++    localparam LATENCY_DOT8 = 2;
++    localparam PE_RATIO = 2;
++    localparam NUM_PES = `UP(NUM_LANES / PE_RATIO);
++
++    `UNUSED_VAR (execute_if.data.op_type)
++    `UNUSED_VAR (execute_if.data.op_mod)
++    `UNUSED_VAR (execute_if.data.use_PC)
++    `UNUSED_VAR (execute_if.data.use_imm)
++    `UNUSED_VAR (execute_if.data.tid)
++    `UNUSED_VAR (execute_if.data.rs3_data)
++
++    wire [NUM_LANES-1:0][2*`XLEN-1:0] data_in;
++
++    for (genvar i = 0; i < NUM_LANES; ++i) begin
++        assign data_in[i][0 +: `XLEN] = execute_if.data.rs1_data[i];
++        assign data_in[i][`XLEN +: `XLEN] = execute_if.data.rs2_data[i];
++    end
++
++    wire pe_enable;
++    wire [NUM_PES-1:0][2*`XLEN-1:0] pe_data_in;
++    wire [NUM_PES-1:0][`XLEN-1:0] pe_data_out;
++
++    // PEs time-multiplexing
++    VX_pe_serializer #(
++        .NUM_LANES  (NUM_LANES),
++        .NUM_PES    (NUM_PES),
++        .LATENCY    (LATENCY_DOT8),
++        .DATA_IN_WIDTH (2*`XLEN),
++        .DATA_OUT_WIDTH (`XLEN),
++        .TAG_WIDTH  (TAG_WIDTH),
++        .PE_REG     (1)
++    ) pe_serializer (
++        .clk        (clk),
++        .reset      (reset),
++        .valid_in   (execute_if.valid),
++        .data_in    (data_in),
++        .tag_in     ({
++            execute_if.data.uuid,
++            execute_if.data.wid,
++            execute_if.data.tmask,
++            execute_if.data.PC,
++            execute_if.data.rd,
++            execute_if.data.wb,
++            execute_if.data.pid,
++            execute_if.data.sop,
++            execute_if.data.eop
++        }),
++        .ready_in   (execute_if.ready),
++        .pe_enable  (pe_enable),
++        .pe_data_in (pe_data_in),
++        .pe_data_out(pe_data_out),
++        .valid_out  (commit_if.valid),
++        .data_out   (commit_if.data.data),
++        .tag_out    ({
++            commit_if.data.uuid,
++            commit_if.data.wid,
++            commit_if.data.tmask,
++            commit_if.data.PC,
++            commit_if.data.rd,
++            commit_if.data.wb,
++            commit_if.data.pid,
++            commit_if.data.sop,
++            commit_if.data.eop
++        }),
++        .ready_out  (commit_if.ready)
++    );
++
++    // PEs instancing
++    for (genvar i = 0; i < NUM_PES; ++i) begin
++        wire [31:0] a = pe_data_in[i][0 +: 32];
++        wire [31:0] b = pe_data_in[i][32 +: 32];
++
++        // TODO:
++
++        wire [31:0] c = ?
++
++        wire [31:0] result;
++        `BUFFER_EX(result, c, pe_enable, LATENCY_DOT8);
++        assign pe_data_out[i] = result;
++    end
++
++endmodule
+diff --git a/hw/rtl/core/VX_alu_unit.sv b/hw/rtl/core/VX_alu_unit.sv
+index 13a34f4d..aff72592 100644
+--- a/hw/rtl/core/VX_alu_unit.sv
++++ b/hw/rtl/core/VX_alu_unit.sv
+@@ -33,7 +33,7 @@ module VX_alu_unit #(
+     localparam PID_BITS     = `CLOG2(`NUM_THREADS / NUM_LANES);
+     localparam PID_WIDTH    = `UP(PID_BITS);
+     localparam RSP_ARB_DATAW= `UUID_WIDTH + `NW_WIDTH + NUM_LANES + `XLEN + `NR_BITS + 1 + NUM_LANES * `XLEN + PID_WIDTH + 1 + 1;
+-    localparam RSP_ARB_SIZE = 1 + `EXT_M_ENABLED;
++    localparam RSP_ARB_SIZE = 2 + `EXT_M_ENABLED;
+     localparam PARTIAL_BW   = (BLOCK_SIZE != `ISSUE_WIDTH) || (NUM_LANES != `NUM_THREADS);
+ 
+     VX_execute_if #(
+@@ -60,6 +60,7 @@ module VX_alu_unit #(
+         `RESET_RELAY (block_reset, reset);
+ 
+         wire is_muldiv_op = `EXT_M_ENABLED && `INST_ALU_IS_M(per_block_execute_if[block_idx].data.op_mod);
++        wire is_dot8_op = (per_block_execute_if[block_idx].data.op_type == `INST_ALU_DOT8);
+ 
+         VX_execute_if #(
+             .NUM_LANES (NUM_LANES)
+@@ -69,7 +70,7 @@ module VX_alu_unit #(
+             .NUM_LANES (NUM_LANES)
+         ) int_commit_if();
+ 
+-        assign int_execute_if.valid = per_block_execute_if[block_idx].valid && ~is_muldiv_op;
++        assign int_execute_if.valid = per_block_execute_if[block_idx].valid && (~is_muldiv_op && ~is_dot8_op);
+         assign int_execute_if.data = per_block_execute_if[block_idx].data;
+ 
+         `RESET_RELAY (int_reset, block_reset);
+@@ -86,6 +87,30 @@ module VX_alu_unit #(
+             .commit_if  (int_commit_if)
+         );
+ 
++        VX_execute_if #(
++            .NUM_LANES (NUM_LANES)
++        ) dot8_execute_if();
++
++        VX_commit_if #(
++            .NUM_LANES (NUM_LANES)
++        ) dot8_commit_if();
++
++        assign dot8_execute_if.valid = per_block_execute_if[block_idx].valid && (~is_muldiv_op && is_dot8_op);
++        assign dot8_execute_if.data = per_block_execute_if[block_idx].data;
++
++        `RESET_RELAY (dot8_reset, block_reset);
++
++         VX_alu_dot8 #(
++            .CORE_ID   (CORE_ID),
++            .NUM_LANES (NUM_LANES)
++         ) alu_dot8 (
++            .clk        (clk),
++            .reset      (dot8_reset),
++            .execute_if (dot8_execute_if),
++            .commit_if  (dot8_commit_if)
++        );
++
++
+     `ifdef EXT_M_ENABLE
+ 
+         VX_execute_if #(
+@@ -100,7 +125,7 @@ module VX_alu_unit #(
+         assign mdv_execute_if.data = per_block_execute_if[block_idx].data;
+ 
+         `RESET_RELAY (mdv_reset, block_reset);
+-
++        
+         VX_alu_muldiv #(
+             .CORE_ID   (CORE_ID),
+             .NUM_LANES (NUM_LANES)
+@@ -117,7 +142,7 @@ module VX_alu_unit #(
+         `ifdef EXT_M_ENABLE
+             is_muldiv_op ? mdv_execute_if.ready :
+         `endif
+-            int_execute_if.ready;
++            is_dot8_op ? dot8_execute_if.ready : int_execute_if.ready;
+ 
+         // send response
+ 
+@@ -132,18 +157,21 @@ module VX_alu_unit #(
+             `ifdef EXT_M_ENABLE
+                 mdv_commit_if.valid,
+             `endif
++                dot8_commit_if.valid,
+                 int_commit_if.valid
+             }),
+             .ready_in  ({
+             `ifdef EXT_M_ENABLE
+                 mdv_commit_if.ready,
+             `endif
++                dot8_commit_if.ready,
+                 int_commit_if.ready
+             }),
+             .data_in   ({
+             `ifdef EXT_M_ENABLE
+                 mdv_commit_if.data,
+             `endif
++                dot8_commit_if.data,
+                 int_commit_if.data
+             }),
+             .data_out  (per_block_commit_if[block_idx].data),
+diff --git a/hw/rtl/core/VX_decode.sv b/hw/rtl/core/VX_decode.sv
+index b23ce95c..6fdf2daa 100644
+--- a/hw/rtl/core/VX_decode.sv
++++ b/hw/rtl/core/VX_decode.sv
+@@ -485,6 +485,19 @@ module VX_decode  #(
+                             default:;
+                         endcase
+                     end
++                    7'h01: begin
++                        case (func3)
++                            3'h0: begin // DOT8
++                                ex_type = `EX_ALU;
++                                op_type = `INST_OP_BITS'(`INST_ALU_DOT8);
++                                use_rd = 1;
++                                `USED_IREG (rd);
++                                `USED_IREG (rs1);
++                                `USED_IREG (rs2);
++                            end
++                            default:;
++                        endcase
++                    end
+                     default:;
+                 endcase
+             end
+diff --git a/hw/rtl/core/VX_trace.vh b/hw/rtl/core/VX_trace.vh
+index 699b78f3..2d8933eb 100644
+--- a/hw/rtl/core/VX_trace.vh
++++ b/hw/rtl/core/VX_trace.vh
+@@ -125,6 +125,7 @@ task trace_ex_op(input int level,
+                         `INST_ALU_XOR:   `TRACE(level, ("XOR"));
+                         `INST_ALU_OR:    `TRACE(level, ("OR"));
+                         `INST_ALU_AND:   `TRACE(level, ("AND"));
++                        `INST_ALU_DOT8:  `TRACE(level, ("DOT8"));
+                         default:         `TRACE(level, ("?"));
+                     endcase
+                 end
+diff --git a/kernel/include/vx_intrinsics.h b/kernel/include/vx_intrinsics.h
+index dc7037aa..db90dbf8 100644
+--- a/kernel/include/vx_intrinsics.h
++++ b/kernel/include/vx_intrinsics.h
+@@ -231,6 +231,11 @@ inline void vx_fence() {
+     asm volatile ("fence iorw, iorw");
+ }
+ 
++// DOT8
++inline int vx_dot8(int a, int b) {
++    // TODO:
++}
++
+ #ifdef __cplusplus
+ }
+ #endif
+diff --git a/sim/simx/decode.cpp b/sim/simx/decode.cpp
+index 5f657164..b4addcec 100644
+--- a/sim/simx/decode.cpp
++++ b/sim/simx/decode.cpp
+@@ -392,6 +392,12 @@ static const char* op_string(const Instr &instr) {
+       default:
+         std::abort();
+       }
++    case 1:
++      switch (func3) {
++      case 0: return "DOT8";
++      default:
++        std::abort();
++      }
+     default:
+       std::abort();
+     }
+@@ -529,6 +535,15 @@ std::shared_ptr<Instr> Emulator::decode(uint32_t code) const {
+           std::abort();
+         }
+         break;
++      case 1:
++        switch (func3) {
++        case 0: // DOT8
++          // TODO:
++          break;
++        default:
++          std::abort();
++        }
++        break;
+       default:
+         std::abort();
+       }
+diff --git a/sim/simx/execute.cpp b/sim/simx/execute.cpp
+index 56f2d2c2..d70c8380 100644
+--- a/sim/simx/execute.cpp
++++ b/sim/simx/execute.cpp
+@@ -1395,6 +1395,30 @@ void Emulator::execute(const Instr &instr, uint32_t wid, instr_trace_t *trace) {
+         std::abort();
+       }
+     } break;
++    case 1:
++      switch (func3) {
++      case 0: { // DOT8
++        trace->fu_type = FUType::ALU;
++        trace->alu_type = AluType::DOT8;
++        trace->used_iregs.set(rsrc0);
++        trace->used_iregs.set(rsrc1);
++        for (uint32_t t = thread_start; t < num_threads; ++t) {
++          if (!warp.tmask.test(t))
++            continue;
++          uint32_t a = rsdata[t][0].i;
++          uint32_t b = rsdata[t][1].i;
++
++          // TODO:
++          int c = ?
++
++          rddata[t].i = c;
++        }
++        rd_write = true;
++      } break;
++      default:
++          std::abort();
++      }
++      break;
+     default:
+       std::abort();
+     }
+diff --git a/sim/simx/func_unit.cpp b/sim/simx/func_unit.cpp
+index a1ba3aa6..a6af5e53 100644
+--- a/sim/simx/func_unit.cpp
++++ b/sim/simx/func_unit.cpp
+@@ -43,6 +43,9 @@ void AluUnit::tick() {
+ 		case AluType::IDIV:
+ 			output.push(trace, XLEN+1);
+ 			break;
++		case AluType::DOT8:
++			// TODO:
++			break;
+ 		default:
+ 			std::abort();
+ 		}
+diff --git a/sim/simx/types.h b/sim/simx/types.h
+index 3a52bc05..36ba26a5 100644
+--- a/sim/simx/types.h
++++ b/sim/simx/types.h
+@@ -1,10 +1,10 @@
+ // Copyright © 2019-2023
+-// 
++//
+ // Licensed under the Apache License, Version 2.0 (the "License");
+ // you may not use this file except in compliance with the License.
+ // You may obtain a copy of the License at
+ // http://www.apache.org/licenses/LICENSE-2.0
+-// 
++//
+ // Unless required by applicable law or agreed to in writing, software
+ // distributed under the License is distributed on an "AS IS" BASIS,
+ // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+@@ -65,7 +65,7 @@ enum class RegType {
+ inline std::ostream &operator<<(std::ostream &os, const RegType& type) {
+   switch (type) {
+   case RegType::None: break;
+-  case RegType::Integer: os << "x"; break;  
++  case RegType::Integer: os << "x"; break;
+   case RegType::Float:   os << "f"; break;
+   default: assert(false);
+   }
+@@ -100,7 +100,8 @@ enum class AluType {
+   BRANCH,
+   SYSCALL,
+   IMUL,
+-  IDIV
++  IDIV,
++  DOT8
+ };
+ 
+ inline std::ostream &operator<<(std::ostream &os, const AluType& type) {
+@@ -110,6 +111,7 @@ inline std::ostream &operator<<(std::ostream &os, const AluType& type) {
+   case AluType::SYSCALL: os << "SYSCALL"; break;
+   case AluType::IMUL:    os << "IMUL"; break;
+   case AluType::IDIV:    os << "IDIV"; break;
++  case AluType::DOT8:    os << "DOT8"; break;
+   default: assert(false);
+   }
+   return os;
+@@ -247,13 +249,13 @@ struct MemReq {
+   bool     write;
+   AddrType type;
+   uint32_t tag;
+-  uint32_t cid;    
++  uint32_t cid;
+   uint64_t uuid;
+ 
+-  MemReq(uint64_t _addr = 0, 
++  MemReq(uint64_t _addr = 0,
+           bool _write = false,
+           AddrType _type = AddrType::Global,
+-          uint64_t _tag = 0, 
++          uint64_t _tag = 0,
+           uint32_t _cid = 0,
+           uint64_t _uuid = 0
+   ) : addr(_addr)
+@@ -276,12 +278,12 @@ inline std::ostream &operator<<(std::ostream &os, const MemReq& req) {
+ ///////////////////////////////////////////////////////////////////////////////
+ 
+ struct MemRsp {
+-  uint64_t tag;    
++  uint64_t tag;
+   uint32_t cid;
+   uint64_t uuid;
+-  
++
+   MemRsp(uint64_t _tag = 0, uint32_t _cid = 0, uint64_t _uuid = 0)
+-    : tag (_tag) 
++    : tag (_tag)
+     , cid(_cid)
+     , uuid(_uuid)
+   {}
+@@ -297,16 +299,16 @@ inline std::ostream &operator<<(std::ostream &os, const MemRsp& rsp) {
+ 
+ template <typename T>
+ class HashTable {
+-public:    
++public:
+   HashTable(uint32_t capacity)
+     : entries_(capacity)
+-    , size_(0) 
++    , size_(0)
+   {}
+ 
+   bool empty() const {
+     return (0 == size_);
+   }
+-  
++
+   bool full() const {
+     return (size_ == entries_.size());
+   }
+@@ -337,7 +339,7 @@ public:
+       if (!entry.first) {
+         entry.first = true;
+         entry.second = value;
+-        ++size_;              
++        ++size_;
+         return i;
+       }
+     }
+@@ -374,13 +376,13 @@ public:
+   std::vector<SimPort<Type>> Outputs;
+ 
+   Mux(
+-    const SimContext& ctx, 
+-    const char* name, 
+-    ArbiterType type, 
+-    uint32_t num_inputs, 
++    const SimContext& ctx,
++    const char* name,
++    ArbiterType type,
++    uint32_t num_inputs,
+     uint32_t num_outputs = 1,
+     uint32_t delay = 1
+-  ) : SimObject<Mux<Type>>(ctx, name)    
++  ) : SimObject<Mux<Type>>(ctx, name)
+     , Inputs(num_inputs, this)
+     , Outputs(num_outputs, this)
+     , type_(type)
+@@ -388,13 +390,13 @@ public:
+     , cursors_(num_outputs, 0)
+     , num_reqs_(num_inputs / num_outputs)
+   {
+-    assert(delay != 0);    
++    assert(delay != 0);
+     assert(num_inputs <= 32);
+     assert(num_outputs <= 32);
+     assert(num_inputs >= num_outputs);
+ 
+     // bypass mode
+-    if (num_inputs == num_outputs) {      
++    if (num_inputs == num_outputs) {
+       for (uint32_t i = 0; i < num_inputs; ++i) {
+         Inputs.at(i).bind(&Outputs.at(i));
+       }
+@@ -415,20 +417,20 @@ public:
+     // skip bypass mode
+     if (I == O)
+       return;
+-        
+-    // process inputs       
++
++    // process inputs
+     for (uint32_t o = 0; o < O; ++o) {
+       for (uint32_t r = 0; r < R; ++r) {
+         uint32_t i = (cursors_.at(o) + r) & (R-1);
+         uint32_t j = o * R + i;
+         if (j >= I)
+           continue;
+-        
++
+         auto& req_in = Inputs.at(j);
+         if (!req_in.empty()) {
+           auto& req = req_in.front();
+           DT(4, this->name() << "-" << req);
+-          Outputs.at(o).push(req, delay_);                
++          Outputs.at(o).push(req, delay_);
+           req_in.pop();
+           this->update_cursor(o, i);
+           break;
+@@ -446,7 +448,7 @@ private:
+   }
+ 
+   ArbiterType type_;
+-  uint32_t delay_;  
++  uint32_t delay_;
+   std::vector<uint32_t> cursors_;
+   uint32_t num_reqs_;
+ };
+@@ -459,33 +461,33 @@ public:
+   std::vector<SimPort<Req>>  ReqIn;
+   std::vector<SimPort<Rsp>>  RspIn;
+ 
+-  std::vector<SimPort<Req>>  ReqOut;  
++  std::vector<SimPort<Req>>  ReqOut;
+   std::vector<SimPort<Rsp>>  RspOut;
+ 
+   Switch(
+-    const SimContext& ctx, 
+-    const char* name, 
+-    ArbiterType type, 
+-    uint32_t num_inputs, 
++    const SimContext& ctx,
++    const char* name,
++    ArbiterType type,
++    uint32_t num_inputs,
+     uint32_t num_outputs = 1,
+     uint32_t delay = 1
+-  ) 
+-    : SimObject<Switch<Req, Rsp>>(ctx, name)    
++  )
++    : SimObject<Switch<Req, Rsp>>(ctx, name)
+     , ReqIn(num_inputs, this)
+     , RspIn(num_inputs, this)
+-    , ReqOut(num_outputs, this)    
++    , ReqOut(num_outputs, this)
+     , RspOut(num_outputs, this)
+     , type_(type)
+     , delay_(delay)
+     , cursors_(num_outputs, 0)
+     , lg_num_reqs_(log2ceil(num_inputs / num_outputs))
+   {
+-    assert(delay != 0);    
++    assert(delay != 0);
+     assert(num_inputs <= 32);
+     assert(num_outputs <= 32);
+     assert(num_inputs >= num_outputs);
+ 
+-    // bypass mode    
++    // bypass mode
+     if (num_inputs == num_outputs) {
+       for (uint32_t i = 0; i < num_inputs; ++i) {
+         ReqIn.at(i).bind(&ReqOut.at(i));
+@@ -508,7 +510,7 @@ public:
+     // skip bypass mode
+     if (I == O)
+       return;
+-        
++
+     for (uint32_t o = 0; o < O; ++o) {
+       // process incoming responses
+       if (!RspOut.at(o).empty()) {
+@@ -517,10 +519,10 @@ public:
+         if (lg_num_reqs_ != 0) {
+           i = rsp.tag & (R-1);
+           rsp.tag >>= lg_num_reqs_;
+-        }      
++        }
+         DT(4, this->name() << "-" << rsp);
+         uint32_t j = o * R + i;
+-        RspIn.at(j).push(rsp, 1);      
++        RspIn.at(j).push(rsp, 1);
+         RspOut.at(o).pop();
+       }
+ 
+@@ -530,7 +532,7 @@ public:
+         uint32_t j = o * R + i;
+         if (j >= I)
+           continue;
+-        
++
+         auto& req_in = ReqIn.at(j);
+         if (!req_in.empty()) {
+           auto& req = req_in.front();
+@@ -538,7 +540,7 @@ public:
+             req.tag = (req.tag << lg_num_reqs_) | i;
+           }
+           DT(4, this->name() << "-" << req);
+-          ReqOut.at(o).push(req, delay_);                
++          ReqOut.at(o).push(req, delay_);
+           req_in.pop();
+           this->update_cursor(o, i);
+           break;
+@@ -555,7 +557,7 @@ public:
+ 
+ private:
+   ArbiterType type_;
+-  uint32_t delay_;  
++  uint32_t delay_;
+   std::vector<uint32_t> cursors_;
+   uint32_t lg_num_reqs_;
+ };
+@@ -576,8 +578,8 @@ public:
+   SimPort<MemRsp> RspDC;
+ 
+   LocalMemDemux(
+-    const SimContext& ctx, 
+-    const char* name, 
++    const SimContext& ctx,
++    const char* name,
+     uint32_t delay
+   );
+ 
+diff --git a/tests/regression/dot8/Makefile b/tests/regression/dot8/Makefile
+new file mode 100644
+index 00000000..5eb65418
+--- /dev/null
++++ b/tests/regression/dot8/Makefile
+@@ -0,0 +1,14 @@
++ROOT_DIR := $(realpath ../../..)
++include $(ROOT_DIR)/config.mk
++
++PROJECT := dot8
++
++SRC_DIR := $(VORTEX_HOME)/tests/regression/$(PROJECT)
++
++SRCS := $(SRC_DIR)/main.cpp
++
++VX_SRCS := $(SRC_DIR)/kernel.cpp
++
++OPTS ?= -n16
++
++include ../common.mk
+\ No newline at end of file
+diff --git a/tests/regression/dot8/common.h b/tests/regression/dot8/common.h
+new file mode 100644
+index 00000000..528d4685
+--- /dev/null
++++ b/tests/regression/dot8/common.h
+@@ -0,0 +1,11 @@
++#ifndef _COMMON_H_
++#define _COMMON_H_
++
++typedef struct {
++  uint32_t num_tasks;
++  uint64_t A_addr;
++  uint64_t B_addr;
++  uint64_t C_addr;
++} kernel_arg_t;
++
++#endif
+diff --git a/tests/regression/dot8/kernel.cpp b/tests/regression/dot8/kernel.cpp
+new file mode 100644
+index 00000000..afe95182
+--- /dev/null
++++ b/tests/regression/dot8/kernel.cpp
+@@ -0,0 +1,23 @@
++#include <stdint.h>
++#include <vx_intrinsics.h>
++#include <vx_spawn.h>
++#include <vx_print.h>
++#include "common.h"
++
++void kernel_body(int task_id, kernel_arg_t *arg) {
++	auto A_ptr = reinterpret_cast<int*>(arg->A_addr);
++	auto B_ptr = reinterpret_cast<int*>(arg->B_addr);
++	auto C_ptr = reinterpret_cast<int*>(arg->C_addr);
++
++	int a = A_ptr[task_id];
++	int b = B_ptr[task_id];
++	int c = vx_dot8(a, b);
++
++	C_ptr[task_id] = c;
++}
++
++int main() {
++	kernel_arg_t* arg = (kernel_arg_t*)csr_read(VX_CSR_MSCRATCH);
++	vx_spawn_tasks(arg->num_tasks, (vx_spawn_tasks_cb)kernel_body, arg);
++	return 0;
++}
+diff --git a/tests/regression/dot8/main.cpp b/tests/regression/dot8/main.cpp
+new file mode 100644
+index 00000000..530627a3
+--- /dev/null
++++ b/tests/regression/dot8/main.cpp
+@@ -0,0 +1,190 @@
++#include <iostream>
++#include <unistd.h>
++#include <string.h>
++#include <vector>
++#include <vortex.h>
++#include "common.h"
++
++#define FLOAT_ULP 6
++
++#define RT_CHECK(_expr)                                         \
++   do {                                                         \
++     int _ret = _expr;                                          \
++     if (0 == _ret)                                             \
++       break;                                                   \
++     printf("Error: '%s' returned %d!\n", #_expr, (int)_ret);   \
++	 cleanup();			                                              \
++     exit(-1);                                                  \
++   } while (false)
++
++///////////////////////////////////////////////////////////////////////////////
++
++static void generate_gold(int* out, int* A, int* B, uint32_t size) {
++  for (uint32_t i = 0; i < size; ++i) {
++    int a = A[i];
++    int b = B[i];
++
++    int a0 = (a >> 0) & 0xff;
++    int a1 = (a >> 8) & 0xff;
++    int a2 = (a >> 16) & 0xff;
++    int a3 = (a >> 24) & 0xff;
++
++    int b0 = (b >> 0) & 0xff;
++    int b1 = (b >> 8) & 0xff;
++    int b2 = (b >> 16) & 0xff;
++    int b3 = (b >> 24) & 0xff;
++
++    int c = a0 * b0 + a1 * b1 + a2 * b2 + a3 * b3;
++
++    out[i] = c;
++  }
++}
++
++const char* kernel_file = "kernel.vxbin";
++
++uint32_t size = 16;
++
++vx_device_h device = nullptr;
++vx_buffer_h A_buffer = nullptr;
++vx_buffer_h B_buffer = nullptr;
++vx_buffer_h C_buffer = nullptr;
++vx_buffer_h krnl_buffer = nullptr;
++vx_buffer_h args_buffer = nullptr;
++kernel_arg_t kernel_arg = {};
++
++static void show_usage() {
++   std::cout << "Vortex Test." << std::endl;
++   std::cout << "Usage: [-k: kernel] [-n words] [-h: help]" << std::endl;
++}
++
++static void parse_args(int argc, char **argv) {
++  int c;
++  while ((c = getopt(argc, argv, "n:k:h?")) != -1) {
++    switch (c) {
++    case 'n':
++      size = atoi(optarg);
++      break;
++    case 'k':
++      kernel_file = optarg;
++      break;
++    case 'h':
++    case '?': {
++      show_usage();
++      exit(0);
++    } break;
++    default:
++      show_usage();
++      exit(-1);
++    }
++  }
++}
++
++void cleanup() {
++  if (device) {
++    vx_mem_free(A_buffer);
++    vx_mem_free(B_buffer);
++    vx_mem_free(C_buffer);
++    vx_mem_free(krnl_buffer);
++    vx_mem_free(args_buffer);
++    vx_dev_close(device);
++  }
++}
++
++int main(int argc, char *argv[]) {
++  // parse command arguments
++  parse_args(argc, argv);
++
++  std::srand(50);
++
++  // open device connection
++  std::cout << "open device connection" << std::endl;
++  RT_CHECK(vx_dev_open(&device));
++
++  uint32_t buf_size = size * sizeof(int);
++
++  std::cout << "size: " << size << std::endl;
++
++  kernel_arg.num_tasks = size;
++
++  // allocate device memory
++  std::cout << "allocate device memory" << std::endl;
++  RT_CHECK(vx_mem_alloc(device, buf_size, VX_MEM_READ, &A_buffer));
++  RT_CHECK(vx_mem_address(A_buffer, &kernel_arg.A_addr));
++  RT_CHECK(vx_mem_alloc(device, buf_size, VX_MEM_READ, &B_buffer));
++  RT_CHECK(vx_mem_address(B_buffer, &kernel_arg.B_addr));
++  RT_CHECK(vx_mem_alloc(device, buf_size, VX_MEM_WRITE, &C_buffer));
++  RT_CHECK(vx_mem_address(C_buffer, &kernel_arg.C_addr));
++
++  std::cout << "A_addr=0x" << std::hex << kernel_arg.A_addr << std::endl;
++  std::cout << "B_addr=0x" << std::hex << kernel_arg.B_addr << std::endl;
++  std::cout << "C_addr=0x" << std::hex << kernel_arg.C_addr << std::endl;
++
++  // allocate host buffers
++  std::cout << "allocate host buffers" << std::endl;
++  std::vector<int> h_A(size);
++  std::vector<int> h_B(size);
++  std::vector<int> h_C(size);
++
++  // generate source data
++  for (uint32_t i = 0; i < size; ++i) {
++    h_A[i] = rand();
++    h_B[i] = rand();
++  }
++
++  // upload source buffer0
++  std::cout << "upload source buffer0" << std::endl;
++  RT_CHECK(vx_copy_to_dev(A_buffer, h_A.data(), 0, buf_size));
++
++  // upload source buffer1
++  std::cout << "upload source buffer1" << std::endl;
++  RT_CHECK(vx_copy_to_dev(B_buffer, h_B.data(), 0, buf_size));
++
++  // upload program
++  std::cout << "upload program" << std::endl;
++  RT_CHECK(vx_upload_kernel_file(device, kernel_file, &krnl_buffer));
++
++  // upload kernel argument
++  std::cout << "upload kernel argument" << std::endl;
++  RT_CHECK(vx_upload_bytes(device, &kernel_arg, sizeof(kernel_arg_t), &args_buffer));
++
++  // start device
++  std::cout << "start device" << std::endl;
++  RT_CHECK(vx_start(device, krnl_buffer, args_buffer));
++
++  // wait for completion
++  std::cout << "wait for completion" << std::endl;
++  RT_CHECK(vx_ready_wait(device, VX_MAX_TIMEOUT));
++
++  // download destination buffer
++  std::cout << "download destination buffer" << std::endl;
++  RT_CHECK(vx_copy_from_dev(h_C.data(), C_buffer, 0, buf_size));
++
++  // verify result
++  std::cout << "verify result" << std::endl;
++  int errors = 0;
++  {
++    std::vector<int> h_ref(size);
++    generate_gold(h_ref.data(), h_A.data(), h_B.data(), size);
++
++    for (uint32_t i = 0; i < size; ++i) {
++      if (h_C[i] != h_ref[i]) {
++        std::cout << "error: mismatch at index " << std::dec << i << ": expected 0x"
++                  << std::hex << h_C[i] << ", actual 0x" << h_ref[i] << std::endl;
++        ++errors;
++      }
++    }
++  }
++  // cleanup
++  std::cout << "cleanup" << std::endl;
++  cleanup();
++
++  if (errors != 0) {
++    std::cout << "Found " << std::dec << errors << " errors!" << std::endl;
++    std::cout << "FAILED!" << std::endl;
++    return errors;
++  }
++
++  std::cout << "PASSED!" << std::endl;
++
++  return 0;
++}
+\ No newline at end of file
