@@ -45,6 +45,7 @@ void AluUnit::tick() {
 			break;
 		case AluType::DOT8:
 			// TODO:
+			output.push(trace, 2);
 			break;
 		default:
 			std::abort();

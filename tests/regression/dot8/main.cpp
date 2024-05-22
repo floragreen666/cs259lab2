@@ -24,15 +24,15 @@ static void generate_gold(int* out, int* A, int* B, uint32_t size) {
     int a = A[i];
     int b = B[i];
 
-    int a0 = (a >> 0) & 0xff;
-    int a1 = (a >> 8) & 0xff;
-    int a2 = (a >> 16) & 0xff;
-    int a3 = (a >> 24) & 0xff;
+    int8_t a0 = (a >> 0) & 0xff;
+    int8_t a1 = (a >> 8) & 0xff;
+    int8_t a2 = (a >> 16) & 0xff;
+    int8_t a3 = (a >> 24) & 0xff;
 
-    int b0 = (b >> 0) & 0xff;
-    int b1 = (b >> 8) & 0xff;
-    int b2 = (b >> 16) & 0xff;
-    int b3 = (b >> 24) & 0xff;
+    int8_t b0 = (b >> 0) & 0xff;
+    int8_t b1 = (b >> 8) & 0xff;
+    int8_t b2 = (b >> 16) & 0xff;
+    int8_t b3 = (b >> 24) & 0xff;
 
     int c = a0 * b0 + a1 * b1 + a2 * b2 + a3 * b3;
 

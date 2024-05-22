@@ -104,8 +104,16 @@ module VX_alu_dot8 #(
         wire [31:0] b = pe_data_in[i][32 +: 32];
 
         // TODO:
+        wire [7:0] a0 = a[7:0];
+        wire [7:0] a1 = a[15:8];
+        wire [7:0] a2 = a[23:16];
+        wire [7:0] a3 = a[31:24];
 
-        wire [31:0] c = ?
+        wire [7:0] b0 = b[7:0];
+        wire [7:0] b1 = b[15:8];
+        wire [7:0] b2 = b[23:16];
+        wire [7:0] b3 = b[31:24];
+        wire [31:0] c = $signed(a0) * $signed(b0) + $signed(a1) * $signed(b1) + $signed(a2) * $signed(b2) + $signed(a3) * $signed(b3);
 
         wire [31:0] result;
         `BUFFER_EX(result, c, pe_enable, LATENCY_DOT8);
